@@ -22,4 +22,3 @@ datasets>=2.14.0
 fastmcp>=2.3.0
 mcp>=1.8.0
 sse-starlette>=1.6.0
-asyncio>=3.4.3
