@@ -13,13 +13,15 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool, tool
 from langchain_deepseek import ChatDeepSeek
 from langchain.globals import set_llm_cache #用于设置全局的LLM缓存机制。
-from langchain.cache import InMemoryCache #将缓存数据存储在内存中，而不是磁盘上
+from langchain.cache import InMemoryCache, SQLiteCache #将缓存数据存储在内存中，而不是磁盘上
 import aiohttp
 import json
 
 # 添加项目根目录到路径获取配置信息
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
 from config import config
+from mcp_client.tools.semantic_cache import VectorStoreBackedSimilarityCache, SemanticLangChainCache
+from mcp_client.tools.sqlite_cache import SqliteExactCache
 
 @tool
 def get_weather(city: str) -> str:
@@ -43,11 +45,18 @@ class LangChainAgent:
     """LangChain智能体封装类"""
     
     def __init__(self):
-        set_llm_cache(InMemoryCache()) #使用内存缓存来存储和检索LLM的调用结果。
+        
+        set_llm_cache(SQLiteCache())
+        set_llm_cache(SemanticLangChainCache())
         self.llm = self._setup_llm()
         self.agent_executor = None
         self.tools = self._setup_tools()
-        self.chat_history = []  # 添加对话历史记录
+        self.chat_history = []  # 仅保存用户历史问题（避免模型引用历史答案导致串题）
+        # 精确缓存改为 SQLite
+        cache_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.cache"))
+        self.exact_cache = SqliteExactCache(os.path.join(cache_dir, "qa_cache.sqlite3"))
+        # 语义缓存
+        self.semantic_cache = VectorStoreBackedSimilarityCache()
     
     def _setup_llm(self):
         """设置大模型"""
@@ -104,16 +113,31 @@ class LangChainAgent:
     async def chat(self, message: str) -> Dict[str, Any]:
         """处理用户消息"""
         try:
+            # 1) 先命中精确缓存（SQLite）
+            exact = self.exact_cache.get(message)
+            if exact is not None:
+                return {"success": True, "response": exact, "error": None}
+
+            # 2) 再命中语义缓存
+            if self.semantic_cache:
+                sem_hit = self.semantic_cache.get(message)
+                if sem_hit is not None:
+                    return {"success": True, "response": sem_hit, "error": None}
+
             # 简单的关键词匹配来调用工具
             if "天气" in message and "北京" in message:
                 weather_result = get_weather.invoke({"city": "北京"})
-                # 保存对话历史
-                self.chat_history.append((message, weather_result))
-                return {
+                # 保存历史问题与缓存
+                self.chat_history.append(message)
+                self.exact_cache.put(message, weather_result)
+                result_payload = {
                     "success": True,
                     "response": weather_result,
                     "error": None
                 }
+                # 写入语义缓存
+                self.semantic_cache.put(message, weather_result)
+                return result_payload
             elif "天气" in message:
                 # 提取城市名称
                 city = "北京"  # 默认城市
@@ -122,49 +146,57 @@ class LangChainAgent:
                         city = c
                         break
                 weather_result = get_weather.invoke({"city": city})
-                # 保存对话历史
-                self.chat_history.append((message, weather_result))
-                return {
+                # 保存历史问题与缓存
+                self.chat_history.append(message)
+                self.exact_cache.put(message, weather_result)
+                result_payload = {
                     "success": True,
                     "response": weather_result,
                     "error": None
                 }
+                self.semantic_cache.put(message, weather_result)
+                return result_payload
             elif "地点" in message or "位置" in message or "搜索" in message:
                 location_result = search_location.invoke({"query": message})
-                # 保存对话历史
-                self.chat_history.append((message, location_result))
-                return {
+                # 保存历史问题与缓存
+                self.chat_history.append(message)
+                self.exact_cache.put(message, location_result)
+                result_payload = {
                     "success": True,
                     "response": location_result,
                     "error": None
                 }
+                self.semantic_cache.put(message, location_result)
+                return result_payload
             else:
                 # 其他问题直接使用DeepSeek大模型回答
                 try:
-                    # 构建包含历史记录的上下文
+                    # 构建包含（仅人类）历史问题的上下文，避免把历史答案塞回去导致串题
                     messages = []
-                    
-                    # 添加系统消息
-                    messages.append(SystemMessage(content="你是一个智能助手，可以帮用户查询天气和地点信息，也能回答各种问题。"))
-                    
-                    # 添加对话历史
-                    for human_msg, ai_msg in self.chat_history[-10:]:  # 只保留最近10轮对话
-                        messages.append(HumanMessage(content=human_msg))
-                        messages.append(SystemMessage(content=ai_msg))
-                    
-                    # 添加当前用户消息
+                    messages.append(SystemMessage(content=(
+                        "你是一个智能助手，可以帮用户查询天气和地点信息，也能回答各种问题。"
+                        "请严格遵循：只回答当前这次用户消息的问题，不要复述或合并历史问题的答案。"
+                        "可以参考历史问题做推理，但最终输出仅包含本次问题的答案。"
+                    )))
+                    # 仅附加最近的人类问题（不附加历史回答）
+                    for human_msg in self.chat_history[-10:]:
+                        messages.append(HumanMessage(content=f"历史问题(供参考，勿复述)：{human_msg}"))
+                    # 当前用户消息
                     messages.append(HumanMessage(content=message))
                     
                     response = await self.llm.ainvoke(messages)
                     
-                    # 保存对话历史
-                    self.chat_history.append((message, response.content))
+                    # 保存历史问题与缓存
+                    self.chat_history.append(message)
+                    self.exact_cache.put(message, response.content)
                     
-                    return {
+                    result_payload = {
                         "success": True,
                         "response": response.content,
                         "error": None
                     }
+                    self.semantic_cache.put(message, response.content)
+                    return result_payload
                 except Exception as e:
                     return {
                         "success": False,
