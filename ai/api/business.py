@@ -130,16 +130,73 @@ async def analyze_market(request: QueryRequest):
         # 获取最终状态
         final_output = list(output.values())[-1]
 
-        # 【简化】手动提取趋势（实际可用另一个 LLM 解析）
+        # 使用 LLM 提取5个独立趋势
         raw_text = final_output.get("draft_report", "")
-        sentences = raw_text.split("。")
-        sample_topic = sentences[0][:30] if len(sentences) > 0 else "市场持续增长"
-        sample_desc = sentences[1][:60] if len(sentences) > 1 else "技术进步推动行业发展"
-        sample_data = sentences[2][:60] if len(sentences) > 2 else "2023年销量同比增长40%"
-
-        trends = [
-            {"topic": sample_topic, "description": sample_desc, "data_support": sample_data}
-        ] * 5  # 模拟五个趋势
+        
+        # 调用 LangChain 智能体提取趋势
+        try:
+            from mcp_client.tools.langchain import get_agent
+            agent = await get_agent()
+            
+            trend_extraction_prompt = f"""
+            请基于以下分析报告，提取出5个独立的市场趋势，每个趋势包含：
+            1. topic: 趋势主题（简洁明确，不超过20字）
+            2. description: 趋势描述（详细说明，不超过80字）
+            3. data_support: 数据支撑（具体数据或事实，不超过60字）
+            
+            分析报告内容：
+            {raw_text}
+            
+            请以JSON格式返回，格式如下：
+            [
+                {{
+                    "topic": "趋势主题1",
+                    "description": "趋势描述1",
+                    "data_support": "数据支撑1"
+                }},
+                {{
+                    "topic": "趋势主题2", 
+                    "description": "趋势描述2",
+                    "data_support": "数据支撑2"
+                }},
+                ...
+            ]
+            
+            请确保返回5个不同的趋势，每个趋势都要有独特性和价值。
+            """
+            
+            trend_result = await agent.chat(trend_extraction_prompt)
+            trend_response = trend_result.get("response", "")
+            
+            # 尝试解析JSON格式的趋势数据
+            import json
+            try:
+                # 提取JSON部分（去除可能的markdown格式）
+                if "```json" in trend_response:
+                    json_start = trend_response.find("```json") + 7
+                    json_end = trend_response.find("```", json_start)
+                    json_str = trend_response[json_start:json_end].strip()
+                elif "```" in trend_response:
+                    json_start = trend_response.find("```") + 3
+                    json_end = trend_response.find("```", json_start)
+                    json_str = trend_response[json_start:json_end].strip()
+                else:
+                    json_str = trend_response.strip()
+                
+                trends = json.loads(json_str)
+                
+                # 确保不超过5个趋势
+                if len(trends) > 5:
+                    # 如果超过5个，只取前5个
+                    trends = trends[:5]
+                    
+            except json.JSONDecodeError:
+                # 如果JSON解析失败，返回空数组
+                trends = []
+                
+        except Exception as e:
+            # 如果LLM调用失败，返回空数组
+            trends = []
 
         return ResearchResponse(
             title=f"{request.query}分析报告",
