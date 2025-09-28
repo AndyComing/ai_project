@@ -3,11 +3,10 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import sys
 import os
-from langgraph.graph import StateGraph
 from mcp_client.tools.state import MarketResearchState
 from schemas.response_model import ResearchResponse
 import re
-
+from mcp_client.tools.langgraph import build_graph
 # 确保可导入到 mcp_client 包
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))  # 添加 ai/ 到 sys.path
 
@@ -20,14 +19,11 @@ except Exception as e:
     _import_error = str(e)
 
 # 初始化图
-def build_graph():
-    return StateGraph(MarketResearchState)
-
 graph = build_graph()
+
 class QueryRequest(BaseModel):
     query: str
 business_router = APIRouter()
-
 
 class ChatRequest(BaseModel):
     question: str

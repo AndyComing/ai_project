@@ -9,7 +9,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
 from config import config
 
 async def writer_node(state):
-    prompt_text = open("prompts/writer_prompt.txt").read()
+    prompt_path = os.path.join(os.path.dirname(__file__), "..", "prompts", "writer_prompt.txt")
+    prompt_text = open(prompt_path).read()
     prompt = ChatPromptTemplate.from_messages([
         ("system", prompt_text),
         ("human", "请基于以下分析撰写报告：\n\n{analysis}")

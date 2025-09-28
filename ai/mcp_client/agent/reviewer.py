@@ -9,7 +9,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
 from config import config
 
 async def reviewer_node(state):
-    prompt_text = open("prompts/reviewer_prompt.txt").read()
+    prompt_path = os.path.join(os.path.dirname(__file__), "..", "prompts", "reviewer_prompt.txt")
+    prompt_text = open(prompt_path).read()
     prompt = ChatPromptTemplate.from_messages([
         ("system", prompt_text),
         ("human", "请审核以下报告：\n\n{draft_report}")

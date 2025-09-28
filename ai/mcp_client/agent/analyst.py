@@ -16,7 +16,8 @@ _PROMPT_TEMPLATE = """
 """
 
 async def analyst_node(state):
-    prompt_text = open("prompts/analyst_prompt.txt").read()
+    prompt_path = os.path.join(os.path.dirname(__file__), "..", "prompts", "analyst_prompt.txt")
+    prompt_text = open(prompt_path).read()
     prompt = ChatPromptTemplate.from_messages([
         ("system", prompt_text),
         ("human", _PROMPT_TEMPLATE.format(
