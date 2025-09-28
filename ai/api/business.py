@@ -3,6 +3,10 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import sys
 import os
+from langgraph.graph import StateGraph
+from mcp_client.tools.state import MarketResearchState
+from schemas.response_model import ResearchResponse
+import re
 
 # 确保可导入到 mcp_client 包
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))  # 添加 ai/ 到 sys.path
@@ -15,7 +19,13 @@ except Exception as e:
     get_agent = None  # type: ignore
     _import_error = str(e)
 
+# 初始化图
+def build_graph():
+    return StateGraph(MarketResearchState)
 
+graph = build_graph()
+class QueryRequest(BaseModel):
+    query: str
 business_router = APIRouter()
 
 
@@ -99,4 +109,49 @@ async def cache_clear_semantic() -> Any:
     except Exception as e:
         return APIResponse.error(message=str(e), code="500")
 
+@business_router.post("/analyze", response_model=ResearchResponse)
+async def analyze_market(request: QueryRequest):
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="查询内容不能为空")
 
+    initial_state: MarketResearchState = {
+        "query": request.query,
+        "research_data": "",
+        "analysis": "",
+        "draft_report": "",
+        "final_report": None,
+        "trends": [],
+        "sources": [],
+        "revision_count": 0,
+        "feedback": ""
+    }
+
+    try:
+        # 执行整个流程
+        async for output in graph.astream(initial_state):
+            pass  # 流式输出可用于日志追踪
+
+        # 获取最终状态
+        final_output = list(output.values())[-1]
+
+        # 【简化】手动提取趋势（实际可用另一个 LLM 解析）
+        raw_text = final_output.get("draft_report", "")
+        sentences = raw_text.split("。")
+        sample_topic = sentences[0][:30] if len(sentences) > 0 else "市场持续增长"
+        sample_desc = sentences[1][:60] if len(sentences) > 1 else "技术进步推动行业发展"
+        sample_data = sentences[2][:60] if len(sentences) > 2 else "2023年销量同比增长40%"
+
+        trends = [
+            {"topic": sample_topic, "description": sample_desc, "data_support": sample_data}
+        ] * 5  # 模拟五个趋势
+
+        return ResearchResponse(
+            title=f"{request.query}分析报告",
+            query=request.query,
+            trends=trends,
+            conclusion=raw_text[:500] + "...",
+            sources=final_output.get("sources", [])[:5]
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"分析失败: {str(e)}")
