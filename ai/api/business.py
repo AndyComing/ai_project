@@ -208,3 +208,138 @@ async def analyze_market(request: QueryRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"分析失败: {str(e)}")
+
+# 修复第211行后的代码结构问题
+class QuestionRequest(BaseModel):
+    question: str
+
+# 修复导入问题 - 在文件顶部添加错误处理
+try:
+    from mcp_client.tools.langgraph import load_qa_chain
+    qa_chain = load_qa_chain()
+except ImportError:
+    # 如果导入失败，提供一个模拟的QA链
+    class MockQAChain:
+        def invoke(self, inputs):
+            return {
+                "result": "RAG功能当前不可用，请检查配置",
+                "source_documents": []
+            }
+    qa_chain = MockQAChain()
+
+@business_router.post("/ask")
+def ask(request: QuestionRequest):
+    """问答接口"""
+    try:
+        result = qa_chain.invoke({"query": request.question})
+        return {
+            "answer": result["result"],
+            "sources": [
+                {"content": doc.page_content, "metadata": doc.metadata}
+                for doc in result.get("source_documents", [])
+            ]
+        }
+    except Exception as e:
+        return {
+            "answer": f"处理问题时出错: {str(e)}",
+            "sources": []
+        }
+
+# 在现有的ask接口后添加更多RAG相关接口：
+
+@business_router.get("/rag/status")
+async def rag_status():
+    """检查RAG系统状态"""
+    try:
+        from mcp_client.RAG.rag import get_rag_system
+        
+        rag_system = get_rag_system()
+        
+        # 尝试初始化检查
+        if not rag_system.query_engine:
+            rag_system.initialize()
+        
+        status = {
+            "rag_available": rag_system.index is not None,
+            "embedding_model": "BAAI/bge-small-en-v1.5",
+            "vector_store": "Chroma",
+            "retriever_status": rag_system.retriever is not None,
+            "query_engine_status": rag_system.query_engine is not None
+        }
+        
+        return APIResponse.success(data=status)
+    except Exception as e:
+        return APIResponse.error(message=str(e), code="500")
+
+@business_router.post("/rag/search")
+async def rag_search(request: QuestionRequest):
+    """RAG检索接口 - 直接返回检索到的文档"""
+    try:
+        from mcp_client.RAG.rag import get_rag_system
+        
+        rag_system = get_rag_system()
+        
+        # 如果检索器未初始化，尝试初始化整个系统
+        if not rag_system.retriever:
+            print("RAG系统未初始化，尝试初始化...")
+            initialize_success = rag_system.initialize()
+            if not initialize_success:
+                return APIResponse.error(message="RAG系统初始化失败", code="500")
+        
+        documents = rag_system.retrieve_documents(request.question, top_k=5)
+        
+        return APIResponse.success(data={
+            "query": request.question,
+            "documents": documents,
+            "count": len(documents)
+        })
+        
+    except Exception as e:
+        return APIResponse.error(message=str(e), code="500")
+
+@business_router.post("/rag/ask")
+async def rag_ask(request: QuestionRequest):
+    """增强的RAG问答接口"""
+    try:
+        from mcp_client.RAG.rag import get_rag_system
+        
+        rag_system = get_rag_system()
+        
+        # 如果RAG系统未初始化，尝试初始化
+        if not rag_system.query_engine:
+            print("RAG系统未初始化，尝试初始化...")
+            initialize_success = rag_system.initialize()
+            if not initialize_success:
+                return APIResponse.error(message="RAG系统初始化失败", code="500")
+        
+        # 使用RAG系统回答问题
+        result = rag_system.query(request.question)
+        
+        return APIResponse.success(data={
+            "answer": result["answer"],
+            "sources": result["sources"],
+            "source_count": len(result["sources"])
+        })
+        
+    except Exception as e:
+        return APIResponse.error(message=str(e), code="500")
+
+# 保持原有的ask接口，但确保使用增强的load_qa_chain
+@business_router.post("/ask")
+def ask(request: QuestionRequest):
+    """问答接口 - 使用LangChain+LlamaIndex"""
+    try:
+        result = qa_chain.invoke({"query": request.question})
+        return {
+            "answer": result["result"],
+            "sources": [
+                {"content": doc.page_content, "metadata": doc.metadata}
+                for doc in result.get("source_documents", [])
+            ],
+            "source_count": len(result.get("source_documents", []))
+        }
+    except Exception as e:
+        return {
+            "answer": f"处理问题时出错: {str(e)}",
+            "sources": []
+        }

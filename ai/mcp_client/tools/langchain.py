@@ -228,3 +228,131 @@ async def get_agent() -> LangChainAgent:
         _agent_instance = LangChainAgent()
         await _agent_instance.initialize()
     return _agent_instance
+
+### rag结合 
+# langchain_retriever.py
+
+from langchain_core.documents import Document  # 修复过时的导入
+from langchain_community.vectorstores import Chroma  # 修复过时的导入
+from llama_index.core.query_engine import RetrieverQueryEngine
+from llama_index.core.retrievers import VectorIndexRetriever
+from typing import List
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import PromptTemplate
+from langchain.chains import RetrievalQA
+
+# 导入RAG系统
+try:
+    from mcp_client.RAG.rag import get_rag_system, initialize_rag
+    RAG_AVAILABLE = True
+except ImportError as e:
+    RAG_AVAILABLE = False
+    print(f"RAG系统不可用: {e}")
+
+def load_qa_chain():
+    """加载问答链 - 结合LlamaIndex检索和LangChain生成"""
+    if not RAG_AVAILABLE:
+        # 如果RAG不可用，返回模拟链
+        class MockQAChain:
+            def invoke(self, inputs):
+                return {
+                    "result": "RAG功能不可用，请检查配置",
+                    "source_documents": []
+                }
+        return MockQAChain()
+    
+    try:
+        # 初始化RAG系统
+        if not initialize_rag():
+            raise Exception("RAG系统初始化失败")
+        
+        rag_system = get_rag_system()
+        
+        class RAGQAChain:
+            def __init__(self, rag_system):
+                self.rag_system = rag_system
+                self.llm = ChatDeepSeek(
+                    model=config.DEEPSEEK_MODEL,
+                    temperature=0.1,
+                    api_key=config.DEEPSEEK_API_KEY,
+                    base_url=config.DEEPSEEK_BASE_URL
+                )
+            
+            def invoke(self, inputs):
+                try:
+                    query = inputs.get("query", "")
+                    
+                    # 1. 使用LlamaIndex检索相关文档
+                    retrieved_docs = self.rag_system.retrieve_documents(query)
+                    
+                    # 2. 构建提示词
+                    context = "\n\n".join([doc["text"] for doc in retrieved_docs])
+                    
+                    prompt = f"""基于以下上下文信息回答用户问题。
+
+上下文信息：
+{context}
+
+用户问题：{query}
+
+请基于上下文信息回答问题。如果上下文中没有相关信息，请说明无法找到答案。
+
+回答："""
+                    
+                    # 3. 使用DeepSeek生成回答
+                    response = self.llm.invoke(prompt)
+                    answer = response.content if hasattr(response, 'content') else str(response)
+                    
+                    # 4. 格式化输出
+                    from langchain_core.documents import Document
+                    source_docs = []
+                    for doc in retrieved_docs:
+                        source_docs.append(Document(
+                            page_content=doc["text"],
+                            metadata=doc["metadata"]
+                        ))
+                    
+                    return {
+                        "result": answer,
+                        "source_documents": source_docs
+                    }
+                    
+                except Exception as e:
+                    return {
+                        "result": f"处理失败: {str(e)}",
+                        "source_documents": []
+                    }
+        
+        return RAGQAChain(rag_system)
+        
+    except Exception as e:
+        # 如果出现任何错误，返回模拟chain
+        class MockQAChain:
+            def invoke(self, inputs):
+                return {
+                    "result": f"RAG功能配置错误: {str(e)}",
+                    "source_documents": []
+                }
+        return MockQAChain()
+
+
+class LlamaIndexRetriever:
+    def __init__(self, index):
+        self.index = index
+        self.retriever = VectorIndexRetriever(index=index, similarity_top_k=3)
+        self.query_engine = RetrieverQueryEngine(retriever=self.retriever)
+
+    def get_relevant_documents(self, query: str) -> List[Document]:
+        nodes = self.retriever.retrieve(query)
+        docs = []
+        for node in nodes:
+            doc = Document(
+                page_content=node.node.text,
+                metadata={"score": node.score, "source": node.node.metadata.get("file_path", "unknown")}
+            )
+            docs.append(doc)
+        return docs
+
+    def invoke(self, query: str) -> List[Document]:
+        return self.get_relevant_documents(query)
+        

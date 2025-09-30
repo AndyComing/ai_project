@@ -25,6 +25,8 @@ class Config:
     MCP_SERVER_URL: Optional[str] = os.getenv("MCP_SERVER_URL", "http://localhost:8011")
     MCP_CLIENT_URL: Optional[str] = os.getenv("MCP_CLIENT_URL", "http://localhost:8002")
     
+    # 搜索新闻的key 
+    TAVILY_API_KEY: Optional[str] = os.getenv("TAVILY_API_KEY")
     # 服务器配置
     HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = int(os.getenv("PORT", "7011"))
